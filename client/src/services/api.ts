@@ -55,7 +55,7 @@ export const jobApi = {
   resumeJob: (id: string): Promise<ApiResponse<Job>> =>
     api.post(`/jobs/${id}/resume`),
 
-  triggerJob: (id: string): Promise<ApiResponse> =>
+  triggerJob: (id: string): Promise<ApiResponse & { success: boolean; reason?: string }> =>
     api.post(`/jobs/${id}/trigger`),
 
   getRunningInfo: (id: string): Promise<ApiResponse<RunningJobInfo | null>> =>

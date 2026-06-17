@@ -13,8 +13,13 @@ import {
   Col,
   Tooltip,
   Progress,
+  Switch,
+  Modal,
+  Alert,
+  Badge,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import type { ModalProps } from 'antd';
 import {
   PlusOutlined,
   EditOutlined,
@@ -27,6 +32,11 @@ import {
   PauseCircleOutlined,
   SyncOutlined,
   RobotOutlined,
+  ClockCircleOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  ExclamationCircleOutlined,
+  DownOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { Job, JobStatus, JobType, ScheduleType, JobListQuery, RunningJobInfo } from '../types';
@@ -35,6 +45,14 @@ import JobFormModal from '../components/JobFormModal';
 
 const { Search } = Input;
 const { Option } = Select;
+
+interface BatchResult {
+  jobId: string;
+  jobName: string;
+  success: boolean;
+  status: 'executed' | 'already_running' | 'skipped' | 'failed';
+  message: string;
+}
 
 const formatDuration = (ms: number): string => {
   if (ms < 1000) return `${ms}ms`;
@@ -54,11 +72,24 @@ const Jobs: React.FC = () => {
   const [typeFilter, setTypeFilter] = useState<JobType | undefined>();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
-  const [, setTick] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastRefreshTime, setLastRefreshTime] = useState<Date>(new Date());
+  const [batchResultModal, setBatchResultModal] = useState<{
+    visible: boolean;
+    title: string;
+    results: BatchResult[];
+  }>({ visible: false, title: '', results: [] });
 
-  const fetchJobs = useCallback(async () => {
-    setLoading(true);
+  const dataTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [, setTick] = useState(0);
+
+  const hasRunningJobs = jobs.some(job => !!job.runningInfo);
+  const refreshInterval = hasRunningJobs ? 2000 : 5000;
+
+  const fetchJobs = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const query: JobListQuery = {
         page,
@@ -71,13 +102,16 @@ const Jobs: React.FC = () => {
       if (res.success) {
         setJobs(res.data || []);
         setTotal(res.pagination?.total || 0);
-      } else {
+        setLastRefreshTime(new Date());
+      } else if (!silent) {
         message.error(res.message || '获取任务列表失败');
       }
     } catch (error: any) {
-      message.error(error.message || '获取任务列表失败');
+      if (!silent) {
+        message.error(error.message || '获取任务列表失败');
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [page, pageSize, keyword, statusFilter, typeFilter]);
 
@@ -86,12 +120,25 @@ const Jobs: React.FC = () => {
   }, [fetchJobs]);
 
   useEffect(() => {
-    timerRef.current = setInterval(() => {
+    if (autoRefresh) {
+      dataTimerRef.current = setInterval(() => {
+        fetchJobs(true);
+      }, refreshInterval);
+    }
+    return () => {
+      if (dataTimerRef.current) {
+        clearInterval(dataTimerRef.current);
+      }
+    };
+  }, [autoRefresh, refreshInterval, fetchJobs]);
+
+  useEffect(() => {
+    tickTimerRef.current = setInterval(() => {
       setTick((t) => t + 1);
     }, 1000);
     return () => {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
+      if (tickTimerRef.current) {
+        clearInterval(tickTimerRef.current);
       }
     };
   }, []);
@@ -158,9 +205,11 @@ const Jobs: React.FC = () => {
 
   const handleTrigger = async (job: Job) => {
     try {
-      await jobApi.triggerJob(job._id);
-      message.success('任务已触发');
-      setTimeout(fetchJobs, 500);
+      const res = await jobApi.triggerJob(job._id);
+      if (res.success) {
+        message.success('任务已触发');
+      }
+      setTimeout(() => fetchJobs(true), 500);
     } catch (error: any) {
       message.error(error.message || '触发失败');
     }
@@ -174,6 +223,98 @@ const Jobs: React.FC = () => {
     } catch (error: any) {
       message.error(error.message || '删除失败');
     }
+  };
+
+  const handleBatchOperation = async (
+    operation: 'pause' | 'resume' | 'enable' | 'disable' | 'trigger',
+    label: string
+  ) => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先选择要操作的任务');
+      return;
+    }
+
+    const confirm = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: `确认批量${label}`,
+        content: `确定要对选中的 ${selectedRowKeys.length} 个任务执行${label}操作吗？`,
+        okText: '确定',
+        cancelText: '取消',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+
+    if (!confirm) return;
+
+    const results: BatchResult[] = [];
+
+    for (const key of selectedRowKeys) {
+      const job = jobs.find(j => j._id === key);
+      if (!job) continue;
+
+      try {
+        let result: { success: boolean; reason?: string };
+        let status: BatchResult['status'] = 'executed';
+
+        switch (operation) {
+          case 'pause':
+            await jobApi.pauseJob(job._id);
+            result = { success: true };
+            break;
+          case 'resume':
+            await jobApi.resumeJob(job._id);
+            result = { success: true };
+            break;
+          case 'enable':
+            await jobApi.enableJob(job._id);
+            result = { success: true };
+            break;
+          case 'disable':
+            await jobApi.disableJob(job._id);
+            result = { success: true };
+            break;
+          case 'trigger':
+            const triggerRes = await jobApi.triggerJob(job._id);
+            result = {
+              success: triggerRes.success,
+              reason: (triggerRes as any).reason || '',
+            };
+            if (!triggerRes.success) {
+              const reason = (triggerRes as any).reason || '';
+              status = reason.includes('正在执行') ? 'already_running' : 'failed';
+            }
+            break;
+          default:
+            result = { success: false, reason: '未知操作' };
+            status = 'failed';
+        }
+
+        results.push({
+          jobId: job._id,
+          jobName: job.name,
+          success: result.success,
+          status,
+          message: result.success ? '操作成功' : (result.reason || '操作失败'),
+        });
+      } catch (error: any) {
+        results.push({
+          jobId: job._id,
+          jobName: job.name,
+          success: false,
+          status: 'failed',
+          message: error.message || '操作失败',
+        });
+      }
+    }
+
+    setSelectedRowKeys([]);
+    fetchJobs(true);
+    setBatchResultModal({
+      visible: true,
+      title: `批量${label}结果`,
+      results,
+    });
   };
 
   const renderRunningInfo = (runningInfo: RunningJobInfo) => {
@@ -228,10 +369,44 @@ const Jobs: React.FC = () => {
       return <span style={{ color: '#999' }}>-</span>;
     }
     if (record.status === JobStatus.PAUSED) {
+      if (record.scheduleType === ScheduleType.ONCE && record.executeAt) {
+        const executeAt = dayjs(record.executeAt);
+        const isPast = executeAt.isBefore(dayjs());
+        return (
+          <Tooltip title={isPast ? '执行时间已过，恢复后也不会执行' : '暂停中，恢复后将按计划执行'}>
+            <Space size={4}>
+              {isPast ? (
+                <ExclamationCircleOutlined style={{ color: '#faad14' }} />
+              ) : (
+                <ClockCircleOutlined style={{ color: '#faad14' }} />
+              )}
+              <Tag color={isPast ? 'default' : 'warning'}>
+                {isPast ? '已过期' : '已暂停'}
+              </Tag>
+              {!isPast && (
+                <span style={{ color: '#666', fontSize: 12 }}>
+                  {executeAt.format('MM-DD HH:mm')}
+                </span>
+              )}
+            </Space>
+          </Tooltip>
+        );
+      }
       return <Tag color="warning">已暂停</Tag>;
     }
     if (record.scheduleType === ScheduleType.ONCE && record.executeAt) {
-      return <span>{dayjs(record.executeAt).format('YYYY-MM-DD HH:mm:ss')}</span>;
+      const executeAt = dayjs(record.executeAt);
+      const isPast = executeAt.isBefore(dayjs());
+      return (
+        <Tooltip title={isPast ? '执行时间已过' : ''}>
+          <Space size={4}>
+            {isPast && <ExclamationCircleOutlined style={{ color: '#faad14' }} />}
+            <span style={{ color: isPast ? '#999' : undefined }}>
+              {executeAt.format('YYYY-MM-DD HH:mm:ss')}
+            </span>
+          </Space>
+        </Tooltip>
+      );
     }
     if (time) {
       return <span>{dayjs(time).format('YYYY-MM-DD HH:mm:ss')}</span>;
@@ -239,12 +414,100 @@ const Jobs: React.FC = () => {
     return <span style={{ color: '#999' }}>-</span>;
   };
 
+  const renderBatchResultModal = () => {
+    const { visible, title, results } = batchResultModal;
+    const successCount = results.filter(r => r.success).length;
+    const failedCount = results.length - successCount;
+
+    const renderResultStatus = (result: BatchResult) => {
+      const statusMap: Record<BatchResult['status'], { color: string; text: string; icon: React.ReactNode }> = {
+        executed: { color: 'success', text: '成功', icon: <CheckCircleOutlined /> },
+        already_running: { color: 'warning', text: '正在执行', icon: <ExclamationCircleOutlined /> },
+        skipped: { color: 'default', text: '已跳过', icon: <CloseCircleOutlined /> },
+        failed: { color: 'error', text: '失败', icon: <CloseCircleOutlined /> },
+      };
+      const config = statusMap[result.status];
+      return (
+        <Space size={4}>
+          <span style={{ color: config.color }}>{config.icon}</span>
+          <Tag color={config.color}>{config.text}</Tag>
+        </Space>
+      );
+    };
+
+    const columns: ColumnsType<BatchResult> = [
+      {
+        title: '任务名称',
+        dataIndex: 'jobName',
+        key: 'jobName',
+        width: 200,
+        ellipsis: true,
+      },
+      {
+        title: '结果',
+        dataIndex: 'status',
+        key: 'status',
+        width: 120,
+        render: (_, record) => renderResultStatus(record),
+      },
+      {
+        title: '说明',
+        dataIndex: 'message',
+        key: 'message',
+        render: (text: string) => text,
+      },
+    ];
+
+    const modalFooter: ModalProps['footer'] = (_) => [
+      <Button key="close" type="primary" onClick={() => setBatchResultModal({ ...batchResultModal, visible: false })}>
+        关闭
+      </Button>,
+    ];
+
+    return (
+      <Modal
+        title={title}
+        open={visible}
+        onCancel={() => setBatchResultModal({ ...batchResultModal, visible: false })}
+        width={700}
+        footer={modalFooter}
+        destroyOnClose
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type={failedCount === 0 ? 'success' : failedCount === results.length ? 'error' : 'warning'}
+            message={
+              <Space>
+                <span>共 {results.length} 个任务</span>
+                {successCount > 0 && (
+                  <Badge status="success" text={`成功 ${successCount}`} />
+                )}
+                {failedCount > 0 && (
+                  <Badge status="error" text={`失败 ${failedCount}`} />
+                )}
+              </Space>
+            }
+            showIcon
+          />
+          <Table
+            size="small"
+            rowKey="jobId"
+            columns={columns}
+            dataSource={results}
+            pagination={false}
+            scroll={{ y: 400 }}
+          />
+        </Space>
+      </Modal>
+    );
+  };
+
   const columns: ColumnsType<Job> = [
     {
       title: '任务名称',
       dataIndex: 'name',
       key: 'name',
-      width: 180,
+      width: 200,
       ellipsis: true,
       render: (text: string, record: Job) => (
         <Space direction="vertical" size={0}>
@@ -264,7 +527,7 @@ const Jobs: React.FC = () => {
       title: '类型',
       dataIndex: 'type',
       key: 'type',
-      width: 100,
+      width: 80,
       render: (type: JobType) => (
         <Tag color={type === JobType.HTTP ? 'blue' : 'green'}>
           {type === JobType.HTTP ? 'HTTP' : '脚本'}
@@ -334,7 +597,7 @@ const Jobs: React.FC = () => {
     {
       title: '操作',
       key: 'actions',
-      width: 300,
+      width: 320,
       fixed: 'right',
       render: (_, record: Job) => {
         const isRunning = !!record.runningInfo;
@@ -408,6 +671,16 @@ const Jobs: React.FC = () => {
     },
   ];
 
+  const rowSelection = {
+    selectedRowKeys,
+    onChange: (newSelectedRowKeys: React.Key[]) => {
+      setSelectedRowKeys(newSelectedRowKeys);
+    },
+    getCheckboxProps: (record: Job) => ({
+      disabled: !!record.runningInfo,
+    }),
+  };
+
   return (
     <div>
       <Card>
@@ -448,11 +721,54 @@ const Jobs: React.FC = () => {
               <Option value={JobType.SCRIPT}>脚本</Option>
             </Select>
           </Col>
-          <Col span={4}>
-            <Space>
-              <Button icon={<ReloadOutlined />} onClick={fetchJobs} loading={loading}>
-                刷新
-              </Button>
+          <Col span={8}>
+            <Space wrap>
+              <Space size={4}>
+                <SyncOutlined spin={autoRefresh} style={{ color: autoRefresh ? '#1890ff' : '#999' }} />
+                <span style={{ fontSize: 12, color: '#666' }}>自动刷新</span>
+                <Switch
+                  size="small"
+                  checked={autoRefresh}
+                  onChange={setAutoRefresh}
+                />
+              </Space>
+              <Tooltip title={`最后刷新: ${lastRefreshTime.toLocaleTimeString()}，间隔: ${refreshInterval / 1000}秒`}>
+                <Button icon={<ReloadOutlined />} onClick={() => fetchJobs()} loading={loading} size="small">
+                  刷新
+                </Button>
+              </Tooltip>
+              {selectedRowKeys.length > 0 && (
+                <Select<string>
+                  placeholder={`批量操作 (${selectedRowKeys.length})`}
+                  style={{ width: 160 }}
+                  onChange={(value) => {
+                    switch (value) {
+                      case 'pause':
+                        handleBatchOperation('pause', '暂停');
+                        break;
+                      case 'resume':
+                        handleBatchOperation('resume', '恢复');
+                        break;
+                      case 'enable':
+                        handleBatchOperation('enable', '启用');
+                        break;
+                      case 'disable':
+                        handleBatchOperation('disable', '禁用');
+                        break;
+                      case 'trigger':
+                        handleBatchOperation('trigger', '触发');
+                        break;
+                    }
+                  }}
+                  suffixIcon={<DownOutlined />}
+                >
+                  <Option value="pause" icon={<PauseCircleOutlined />}>批量暂停</Option>
+                  <Option value="resume" icon={<PlayCircleOutlined />}>批量恢复</Option>
+                  <Option value="enable" icon={<PlayCircleOutlined />}>批量启用</Option>
+                  <Option value="disable" icon={<StopOutlined />}>批量禁用</Option>
+                  <Option value="trigger" icon={<ThunderboltOutlined />}>批量触发</Option>
+                </Select>
+              )}
               <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
                 新增任务
               </Button>
@@ -465,6 +781,7 @@ const Jobs: React.FC = () => {
           columns={columns}
           dataSource={jobs}
           loading={loading}
+          rowSelection={rowSelection}
           pagination={{
             current: page,
             pageSize,
@@ -478,7 +795,7 @@ const Jobs: React.FC = () => {
               setPageSize(ps);
             },
           }}
-          scroll={{ x: 1400 }}
+          scroll={{ x: 1500 }}
           rowClassName={(record) => record.runningInfo ? 'ant-table-row-selected' : ''}
         />
       </Card>
@@ -491,6 +808,8 @@ const Jobs: React.FC = () => {
           fetchJobs();
         }}
       />
+
+      {renderBatchResultModal()}
     </div>
   );
 };

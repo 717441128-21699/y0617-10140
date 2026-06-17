@@ -70,12 +70,13 @@ export class JobScheduler {
     }
   }
 
-  async updateNextExecutionTime(job: IJobDocument): Promise<void> {
+  async updateNextExecutionTime(job: IJobDocument, fromCurrentTime: boolean = false): Promise<void> {
+    const fromTime = fromCurrentTime ? new Date() : job.lastExecutionTime;
     const nextTime = getNextExecutionTime(
       job.scheduleType,
       job.cronExpression,
       job.executeAt,
-      job.lastExecutionTime
+      fromTime
     );
 
     if (nextTime) {
@@ -249,9 +250,18 @@ export class JobScheduler {
     }
 
     job.status = JobStatus.ENABLED;
-    await this.updateNextExecutionTime(job);
+    await this.updateNextExecutionTime(job, true);
 
-    logger.info(`Job ${job.name} resumed, next execution: ${job.nextExecutionTime?.toISOString()}`);
+    if (job.scheduleType === ScheduleType.ONCE && job.executeAt) {
+      const executeAt = new Date(job.executeAt);
+      if (executeAt < new Date() && !job.nextExecutionTime) {
+        job.status = JobStatus.DISABLED;
+        await job.save();
+        logger.info(`One-time job ${job.name} execution time has passed, auto-disabled after resume`);
+      }
+    }
+
+    logger.info(`Job ${job.name} resumed, next execution: ${job.nextExecutionTime?.toISOString() || 'none'}`);
     return job;
   }
 
