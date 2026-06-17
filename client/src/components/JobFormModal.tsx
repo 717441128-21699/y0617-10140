@@ -337,7 +337,9 @@ const JobFormModal: React.FC<JobFormModalProps> = ({ open, onCancel, onSuccess, 
               <Select>
                 <Option value="node">Node.js</Option>
                 <Option value="python">Python</Option>
-                <Option value="bash">Bash</Option>
+                <Option value="python3">Python3</Option>
+                <Option value="bash">Bash / Shell</Option>
+                <Option value="sh">Sh</Option>
                 <Option value="powershell">PowerShell</Option>
               </Select>
             </Form.Item>

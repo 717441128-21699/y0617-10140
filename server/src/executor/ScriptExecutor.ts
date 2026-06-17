@@ -70,7 +70,8 @@ export class ScriptExecutor {
     } catch (error: any) {
       return {
         success: false,
-        error: error.message || error.stderr || 'Script execution failed',
+        result: error.stdout || undefined,
+        error: error.stderr || error.message || 'Script execution failed',
         duration: 0,
       };
     }
@@ -111,6 +112,7 @@ export class ScriptExecutor {
         clearTimeout(timeoutTimer);
         resolve({
           success: false,
+          result: stdout || undefined,
           error: error.message,
           duration: 0,
         });
@@ -122,6 +124,7 @@ export class ScriptExecutor {
         if (timedOut) {
           resolve({
             success: false,
+            result: stdout || undefined,
             error: `Script execution timed out after ${timeout}ms`,
             duration: 0,
           });
@@ -131,6 +134,7 @@ export class ScriptExecutor {
         if (code !== 0) {
           resolve({
             success: false,
+            result: stdout || undefined,
             error: stderr || `Script exited with code ${code}`,
             duration: 0,
           });
@@ -167,7 +171,8 @@ export class ScriptExecutor {
     } catch (error: any) {
       return {
         success: false,
-        error: error.message || error.stderr || 'Command execution failed',
+        result: error.stdout || undefined,
+        error: error.stderr || error.message || 'Command execution failed',
         duration: 0,
       };
     }

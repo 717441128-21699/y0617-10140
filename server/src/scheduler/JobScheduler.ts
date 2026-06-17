@@ -168,7 +168,8 @@ export class JobScheduler {
       throw new Error('Job not found');
     }
 
-    if (this.jobExecutor.isJobRunning(jobId)) {
+    const isRunning = await this.jobExecutor.isJobRunning(jobId);
+    if (isRunning) {
       logger.warn(`Job ${job.name} is already running, cannot trigger manually`);
       return { success: false, reason: '任务正在执行中，请稍后再试' };
     }

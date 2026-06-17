@@ -7,14 +7,54 @@ import { alertService } from '../services/AlertService';
 import { config } from '../config';
 import logger from '../utils/logger';
 import { DistributedLock } from '../utils/distributedLock';
+import { getRedisClient } from '../db/redis';
 
 export type ExecuteResult = 'executed' | 'already_running' | 'skipped';
+
+const EXECUTING_KEY_PREFIX = 'job:executing:';
+const EXECUTING_KEY_TTL = 3600;
 
 export class JobExecutor {
   private pendingExecutions: Set<string> = new Set();
 
-  isJobRunning(jobId: string): boolean {
-    return this.pendingExecutions.has(jobId);
+  async isJobRunning(jobId: string): Promise<boolean> {
+    if (this.pendingExecutions.has(jobId)) {
+      return true;
+    }
+    try {
+      const redis = getRedisClient();
+      const result = await redis.get(`${EXECUTING_KEY_PREFIX}${jobId}`);
+      return result !== null;
+    } catch (error) {
+      logger.warn('Failed to check job running status from Redis:', error);
+      return this.pendingExecutions.has(jobId);
+    }
+  }
+
+  private async setJobRunning(jobId: string): Promise<boolean> {
+    try {
+      const redis = getRedisClient();
+      const result = await redis.set(
+        `${EXECUTING_KEY_PREFIX}${jobId}`,
+        config.instanceId,
+        'EX',
+        EXECUTING_KEY_TTL,
+        'NX'
+      );
+      return result === 'OK';
+    } catch (error) {
+      logger.warn('Failed to set job running status in Redis:', error);
+      return true;
+    }
+  }
+
+  private async clearJobRunning(jobId: string): Promise<void> {
+    try {
+      const redis = getRedisClient();
+      await redis.del(`${EXECUTING_KEY_PREFIX}${jobId}`);
+    } catch (error) {
+      logger.warn('Failed to clear job running status from Redis:', error);
+    }
   }
 
   async execute(
@@ -25,7 +65,13 @@ export class JobExecutor {
     const executionId = `${jobId}-${Date.now()}`;
 
     if (this.pendingExecutions.has(jobId)) {
-      logger.debug(`Job ${job.name} is already executing, skipping`);
+      logger.debug(`Job ${job.name} is already executing locally, skipping`);
+      return 'already_running';
+    }
+
+    const acquired = await this.setJobRunning(jobId);
+    if (!acquired) {
+      logger.debug(`Job ${job.name} is already executing on another node, skipping`);
       return 'already_running';
     }
 
@@ -36,6 +82,7 @@ export class JobExecutor {
       return 'executed';
     } finally {
       this.pendingExecutions.delete(jobId);
+      await this.clearJobRunning(jobId);
     }
   }
 
@@ -132,6 +179,7 @@ export class JobExecutor {
     history.duration = lastResult?.duration || Date.now() - startTime.getTime();
     history.status = ExecutionStatus.FINAL_FAILED;
     history.error = lastResult?.error || 'Max retries exceeded';
+    history.result = lastResult?.result || undefined;
     history.retryCount = retryCount;
     await history.save();
 
