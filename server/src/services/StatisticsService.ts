@@ -11,6 +11,7 @@ export class StatisticsService {
       totalJobs,
       enabledJobs,
       disabledJobs,
+      pausedJobs,
       totalExecutions,
       successCount,
       failedCount,
@@ -21,6 +22,7 @@ export class StatisticsService {
       JobModel.countDocuments(),
       JobModel.countDocuments({ status: JobStatus.ENABLED }),
       JobModel.countDocuments({ status: JobStatus.DISABLED }),
+      JobModel.countDocuments({ status: JobStatus.PAUSED }),
       ExecutionHistoryModel.countDocuments({ startTime: { $gte: cutoffDate } }),
       ExecutionHistoryModel.countDocuments({
         startTime: { $gte: cutoffDate },
@@ -41,6 +43,7 @@ export class StatisticsService {
       totalJobs,
       enabledJobs,
       disabledJobs,
+      pausedJobs,
       totalExecutions,
       successCount,
       failedCount,

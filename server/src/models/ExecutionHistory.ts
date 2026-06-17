@@ -3,6 +3,16 @@ import { ExecutionHistory, JobType, ExecutionStatus } from '../types';
 
 export interface IExecutionHistoryDocument extends Omit<ExecutionHistory, '_id'>, Document {}
 
+const RetryDetailSchema = new Schema({
+  attempt: { type: Number, required: true },
+  startTime: { type: Date, required: true },
+  endTime: { type: Date, required: true },
+  duration: { type: Number, required: true },
+  status: { type: String, enum: Object.values(ExecutionStatus), required: true },
+  result: String,
+  error: String,
+}, { _id: false });
+
 const ExecutionHistorySchema: Schema = new Schema<IExecutionHistoryDocument>(
   {
     jobId: { type: String, required: true, index: true },
@@ -21,6 +31,7 @@ const ExecutionHistorySchema: Schema = new Schema<IExecutionHistoryDocument>(
     error: String,
     retryCount: { type: Number, default: 0 },
     maxRetries: { type: Number, default: 0 },
+    retryDetails: { type: [RetryDetailSchema], default: [] },
     nodeId: { type: String, required: true, index: true },
     triggeredBy: { type: String, enum: ['scheduler', 'manual'], required: true },
   },

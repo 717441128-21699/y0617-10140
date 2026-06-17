@@ -1,8 +1,8 @@
 import { JobModel, IJobDocument } from '../models/Job';
-import { JobStatus, ScheduleType, ExecutionStatus } from '../types';
+import { JobStatus, ScheduleType, ExecutionStatus, RunningJobInfo } from '../types';
 import { getNextExecutionTime, shouldExecuteJob } from '../utils/cronUtils';
 import { DistributedLock } from '../utils/distributedLock';
-import { JobExecutor } from '../executor/JobExecutor';
+import { JobExecutor, jobExecutor } from '../executor/JobExecutor';
 import { config } from '../config';
 import logger from '../utils/logger';
 
@@ -12,7 +12,7 @@ export class JobScheduler {
   private jobExecutor: JobExecutor;
 
   constructor() {
-    this.jobExecutor = new JobExecutor();
+    this.jobExecutor = jobExecutor;
   }
 
   async start(): Promise<void> {
@@ -55,11 +55,15 @@ export class JobScheduler {
 
   private async initializeJobs(): Promise<void> {
     try {
-      const jobs = await JobModel.find({ status: JobStatus.ENABLED });
-      logger.info(`Initializing ${jobs.length} enabled jobs`);
+      const jobs = await JobModel.find({
+        status: { $in: [JobStatus.ENABLED, JobStatus.PAUSED] },
+      });
+      logger.info(`Initializing ${jobs.length} jobs`);
 
       for (const job of jobs) {
-        await this.updateNextExecutionTime(job);
+        if (job.status === JobStatus.ENABLED) {
+          await this.updateNextExecutionTime(job);
+        }
       }
     } catch (error) {
       logger.error('Error initializing jobs:', error);
@@ -125,7 +129,7 @@ export class JobScheduler {
 
       reloadedJob = await JobModel.findById(job._id);
       if (!reloadedJob || reloadedJob.status !== JobStatus.ENABLED) {
-        logger.info(`Job ${job.name} was disabled or deleted, skipping`);
+        logger.info(`Job ${job.name} was disabled, paused or deleted, skipping`);
         return;
       }
 
@@ -138,23 +142,27 @@ export class JobScheduler {
 
       logger.info(`Executing job: ${reloadedJob.name} (${reloadedJob._id})`);
 
-      const executionPromise = this.jobExecutor.execute(reloadedJob, 'scheduler');
-      void executionPromise.catch((error) => {
-        logger.error(`Error executing job ${reloadedJob!.name}:`, error);
-      });
+      const executeResult = await this.jobExecutor.execute(reloadedJob, 'scheduler');
 
-      reloadedJob.lastExecutionTime = new Date();
-      reloadedJob.totalExecutions++;
-
-      if (reloadedJob.scheduleType === ScheduleType.ONCE) {
-        reloadedJob.nextExecutionTime = undefined;
-        reloadedJob.status = JobStatus.DISABLED;
-        logger.info(`One-time job ${reloadedJob.name} executed, disabling`);
-      } else {
-        await this.updateNextExecutionTime(reloadedJob);
+      if (executeResult === 'already_running') {
+        logger.debug(`Job ${reloadedJob.name} is already running, skipping schedule`);
+        return;
       }
 
-      await reloadedJob.save();
+      if (executeResult === 'executed') {
+        reloadedJob.lastExecutionTime = new Date();
+        reloadedJob.totalExecutions++;
+
+        if (reloadedJob.scheduleType === ScheduleType.ONCE) {
+          reloadedJob.nextExecutionTime = undefined;
+          reloadedJob.status = JobStatus.DISABLED;
+          logger.info(`One-time job ${reloadedJob.name} executed, disabling`);
+        } else {
+          await this.updateNextExecutionTime(reloadedJob);
+        }
+
+        await reloadedJob.save();
+      }
     } catch (error) {
       logger.error(`Error processing job ${reloadedJob?.name || job.name}:`, error);
     } finally {
@@ -166,6 +174,10 @@ export class JobScheduler {
     const job = await JobModel.findById(jobId);
     if (!job) {
       throw new Error('Job not found');
+    }
+
+    if (job.status === JobStatus.DISABLED) {
+      return { success: false, reason: '任务已禁用，请先启用' };
     }
 
     const isRunning = await this.jobExecutor.isJobRunning(jobId);
@@ -185,22 +197,70 @@ export class JobScheduler {
     try {
       logger.info(`Manually triggering job: ${job.name}`);
 
-      void this.jobExecutor.execute(job, 'manual').then((result) => {
-        if (result === 'already_running') {
-          logger.warn(`Job ${job.name} was already running when manual trigger executed`);
-        }
-      }).catch((error) => {
-        logger.error(`Error in manual execution of job ${job.name}:`, error);
-      });
+      const executeResult = await this.jobExecutor.execute(job, 'manual');
 
-      job.totalExecutions++;
-      job.lastExecutionTime = new Date();
-      await job.save();
+      if (executeResult === 'already_running') {
+        logger.warn(`Job ${job.name} was already running when manual trigger executed`);
+        return { success: false, reason: '任务正在执行中，请稍后再试' };
+      }
 
-      return { success: true };
+      if (executeResult === 'executed') {
+        job.totalExecutions++;
+        job.lastExecutionTime = new Date();
+        await job.save();
+      }
+
+      return { success: executeResult === 'executed' };
     } finally {
       await lock.release();
     }
+  }
+
+  async pauseJob(jobId: string): Promise<IJobDocument> {
+    const job = await JobModel.findById(jobId);
+    if (!job) {
+      throw new Error('Job not found');
+    }
+
+    if (job.status === JobStatus.DISABLED) {
+      throw new Error('已禁用的任务无法暂停，请先启用');
+    }
+
+    if (job.status === JobStatus.PAUSED) {
+      return job;
+    }
+
+    job.status = JobStatus.PAUSED;
+    job.nextExecutionTime = undefined;
+    await job.save();
+
+    logger.info(`Job ${job.name} paused`);
+    return job;
+  }
+
+  async resumeJob(jobId: string): Promise<IJobDocument> {
+    const job = await JobModel.findById(jobId);
+    if (!job) {
+      throw new Error('Job not found');
+    }
+
+    if (job.status !== JobStatus.PAUSED) {
+      throw new Error('只有暂停状态的任务才能恢复');
+    }
+
+    job.status = JobStatus.ENABLED;
+    await this.updateNextExecutionTime(job);
+
+    logger.info(`Job ${job.name} resumed, next execution: ${job.nextExecutionTime?.toISOString()}`);
+    return job;
+  }
+
+  async getRunningJobInfo(jobId: string): Promise<RunningJobInfo | null> {
+    return this.jobExecutor.getRunningJobInfo(jobId);
+  }
+
+  async getAllRunningJobs(): Promise<RunningJobInfo[]> {
+    return this.jobExecutor.getAllRunningJobs();
   }
 
   getRunningStatus(): { isRunning: boolean; pendingJobs: number } {

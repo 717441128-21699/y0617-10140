@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Table,
   Button,
@@ -11,6 +11,8 @@ import {
   Card,
   Row,
   Col,
+  Tooltip,
+  Progress,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -22,14 +24,24 @@ import {
   ThunderboltOutlined,
   SearchOutlined,
   ReloadOutlined,
+  PauseCircleOutlined,
+  SyncOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { Job, JobStatus, JobType, ScheduleType, JobListQuery } from '../types';
+import { Job, JobStatus, JobType, ScheduleType, JobListQuery, RunningJobInfo } from '../types';
 import { jobApi } from '../services/api';
 import JobFormModal from '../components/JobFormModal';
 
 const { Search } = Input;
 const { Option } = Select;
+
+const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
+  return `${Math.floor(ms / 3600000)}h ${Math.floor((ms % 3600000) / 60000)}m`;
+};
 
 const Jobs: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -42,6 +54,8 @@ const Jobs: React.FC = () => {
   const [typeFilter, setTypeFilter] = useState<JobType | undefined>();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
+  const [, setTick] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchJobs = useCallback(async () => {
     setLoading(true);
@@ -71,6 +85,17 @@ const Jobs: React.FC = () => {
     fetchJobs();
   }, [fetchJobs]);
 
+  useEffect(() => {
+    timerRef.current = setInterval(() => {
+      setTick((t) => t + 1);
+    }, 1000);
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
+
   const handleSearch = (value: string) => {
     setKeyword(value);
     setPage(1);
@@ -83,13 +108,6 @@ const Jobs: React.FC = () => {
 
   const handleTypeChange = (value: JobType | undefined) => {
     setTypeFilter(value);
-    setPage(1);
-  };
-
-  const handleReset = () => {
-    setKeyword('');
-    setStatusFilter(undefined);
-    setTypeFilter(undefined);
     setPage(1);
   };
 
@@ -118,11 +136,31 @@ const Jobs: React.FC = () => {
     }
   };
 
+  const handlePause = async (job: Job) => {
+    try {
+      await jobApi.pauseJob(job._id);
+      message.success('任务已暂停，将不再自动调度，但仍可手动触发');
+      fetchJobs();
+    } catch (error: any) {
+      message.error(error.message || '暂停失败');
+    }
+  };
+
+  const handleResume = async (job: Job) => {
+    try {
+      await jobApi.resumeJob(job._id);
+      message.success('任务已恢复调度');
+      fetchJobs();
+    } catch (error: any) {
+      message.error(error.message || '恢复失败');
+    }
+  };
+
   const handleTrigger = async (job: Job) => {
     try {
       await jobApi.triggerJob(job._id);
       message.success('任务已触发');
-      fetchJobs();
+      setTimeout(fetchJobs, 500);
     } catch (error: any) {
       message.error(error.message || '触发失败');
     }
@@ -138,6 +176,69 @@ const Jobs: React.FC = () => {
     }
   };
 
+  const renderRunningInfo = (runningInfo: RunningJobInfo) => {
+    const elapsed = Date.now() - runningInfo.startTime;
+    return (
+      <Tooltip
+        title={
+          <div style={{ fontSize: 12 }}>
+            <div>节点: {runningInfo.nodeId}</div>
+            <div>触发方式: {runningInfo.triggeredBy === 'scheduler' ? '定时调度' : '手动触发'}</div>
+            <div>已执行: {formatDuration(elapsed)}</div>
+          </div>
+        }
+      >
+        <Space size={4}>
+          <SyncOutlined spin style={{ color: '#1890ff' }} />
+          <Tag color="processing" style={{ margin: 0 }}>
+            运行中 · {formatDuration(elapsed)}
+          </Tag>
+        </Space>
+      </Tooltip>
+    );
+  };
+
+  const renderStatus = (status: JobStatus, runningInfo?: RunningJobInfo | null) => {
+    if (runningInfo) {
+      return renderRunningInfo(runningInfo);
+    }
+    const statusMap: Record<JobStatus, { color: string; text: string }> = {
+      [JobStatus.ENABLED]: { color: 'success', text: '启用' },
+      [JobStatus.DISABLED]: { color: 'default', text: '禁用' },
+      [JobStatus.PAUSED]: { color: 'warning', text: '暂停' },
+    };
+    const config = statusMap[status] || { color: 'default', text: status };
+    return <Tag color={config.color}>{config.text}</Tag>;
+  };
+
+  const renderNextExecutionTime = (time: string | undefined, record: Job) => {
+    if (record.runningInfo) {
+      return (
+        <Tooltip title={`节点: ${record.runningInfo.nodeId}`}>
+          <Space size={4}>
+            <RobotOutlined style={{ color: '#1890ff' }} />
+            <span style={{ color: '#1890ff' }}>
+              {record.runningInfo.nodeId}
+            </span>
+          </Space>
+        </Tooltip>
+      );
+    }
+    if (record.status === JobStatus.DISABLED) {
+      return <span style={{ color: '#999' }}>-</span>;
+    }
+    if (record.status === JobStatus.PAUSED) {
+      return <Tag color="warning">已暂停</Tag>;
+    }
+    if (record.scheduleType === ScheduleType.ONCE && record.executeAt) {
+      return <span>{dayjs(record.executeAt).format('YYYY-MM-DD HH:mm:ss')}</span>;
+    }
+    if (time) {
+      return <span>{dayjs(time).format('YYYY-MM-DD HH:mm:ss')}</span>;
+    }
+    return <span style={{ color: '#999' }}>-</span>;
+  };
+
   const columns: ColumnsType<Job> = [
     {
       title: '任务名称',
@@ -147,7 +248,12 @@ const Jobs: React.FC = () => {
       ellipsis: true,
       render: (text: string, record: Job) => (
         <Space direction="vertical" size={0}>
-          <span style={{ fontWeight: 500 }}>{text}</span>
+          <Space size={4}>
+            <span style={{ fontWeight: 500 }}>{text}</span>
+            {record.runningInfo && (
+              <SyncOutlined spin style={{ color: '#1890ff', fontSize: 12 }} />
+            )}
+          </Space>
           {record.description && (
             <span style={{ color: '#999', fontSize: 12 }}>{record.description}</span>
           )}
@@ -169,18 +275,14 @@ const Jobs: React.FC = () => {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
-      render: (status: JobStatus) => (
-        <Tag color={status === JobStatus.ENABLED ? 'success' : 'default'}>
-          {status === JobStatus.ENABLED ? '启用' : '禁用'}
-        </Tag>
-      ),
+      width: 140,
+      render: (status: JobStatus, record: Job) => renderStatus(status, record.runningInfo),
     },
     {
       title: '调度方式',
       dataIndex: 'scheduleType',
       key: 'scheduleType',
-      width: 120,
+      width: 140,
       render: (type: ScheduleType, record: Job) => (
         <Space direction="vertical" size={0}>
           <Tag color={type === ScheduleType.CRON ? 'geekblue' : 'purple'}>
@@ -195,92 +297,114 @@ const Jobs: React.FC = () => {
       ),
     },
     {
-      title: '下次执行时间',
+      title: '运行节点 / 下次执行',
       dataIndex: 'nextExecutionTime',
       key: 'nextExecutionTime',
+      width: 200,
+      render: (time: string | undefined, record: Job) => renderNextExecutionTime(time, record),
+    },
+    {
+      title: '执行统计',
+      key: 'stats',
       width: 180,
-      render: (time: string | undefined, record: Job) => {
-        if (record.status === JobStatus.DISABLED) {
-          return <span style={{ color: '#999' }}>-</span>;
-        }
-        if (record.scheduleType === ScheduleType.ONCE && record.executeAt) {
-          return <span>{dayjs(record.executeAt).format('YYYY-MM-DD HH:mm:ss')}</span>;
-        }
-        if (time) {
-          return <span>{dayjs(time).format('YYYY-MM-DD HH:mm:ss')}</span>;
-        }
-        return <span style={{ color: '#999' }}>-</span>;
+      render: (_, record: Job) => {
+        const total = record.totalExecutions || 0;
+        const success = record.successCount || 0;
+        const rate = total > 0 ? Math.round((success / total) * 100) : 0;
+        return (
+          <Space direction="vertical" size={2} style={{ width: '100%' }}>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              成功 <span style={{ color: '#52c41a', fontWeight: 500 }}>{success}</span>
+              {' / '}
+              失败 <span style={{ color: '#ff4d4f', fontWeight: 500 }}>{record.failedCount || 0}</span>
+              {' / '}
+              共 <span style={{ fontWeight: 500 }}>{total}</span>
+            </div>
+            <Progress
+              percent={rate}
+              size="small"
+              showInfo={false}
+              strokeColor={rate >= 80 ? '#52c41a' : rate >= 50 ? '#faad14' : '#ff4d4f'}
+              style={{ margin: 0 }}
+            />
+          </Space>
+        );
       },
-    },
-    {
-      title: '总执行次数',
-      dataIndex: 'totalExecutions',
-      key: 'totalExecutions',
-      width: 110,
-      align: 'center',
-      render: (count: number) => <span style={{ fontWeight: 500 }}>{count}</span>,
-    },
-    {
-      title: '成功次数',
-      dataIndex: 'successCount',
-      key: 'successCount',
-      width: 100,
-      align: 'center',
-      render: (count: number) => <span style={{ color: '#52c41a', fontWeight: 500 }}>{count}</span>,
-    },
-    {
-      title: '失败次数',
-      dataIndex: 'failedCount',
-      key: 'failedCount',
-      width: 100,
-      align: 'center',
-      render: (count: number) => <span style={{ color: '#ff4d4f', fontWeight: 500 }}>{count}</span>,
     },
     {
       title: '操作',
       key: 'actions',
-      width: 240,
+      width: 300,
       fixed: 'right',
-      render: (_, record: Job) => (
-        <Space size="small">
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleEdit(record)}
-          >
-            编辑
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            danger={record.status === JobStatus.ENABLED}
-            icon={record.status === JobStatus.ENABLED ? <StopOutlined /> : <PlayCircleOutlined />}
-            onClick={() => handleToggleStatus(record)}
-          >
-            {record.status === JobStatus.ENABLED ? '禁用' : '启用'}
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            icon={<ThunderboltOutlined />}
-            onClick={() => handleTrigger(record)}
-          >
-            触发
-          </Button>
-          <Popconfirm
-            title="确定要删除这个任务吗？"
-            description="删除后将无法恢复"
-            onConfirm={() => handleDelete(record)}
-            okText="确定"
-            cancelText="取消"
-          >
-            <Button type="link" size="small" danger icon={<DeleteOutlined />}>
-              删除
+      render: (_, record: Job) => {
+        const isRunning = !!record.runningInfo;
+        return (
+          <Space size="small">
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record)}
+            >
+              编辑
             </Button>
-          </Popconfirm>
-        </Space>
-      ),
+            {record.status === JobStatus.ENABLED && (
+              <Button
+                type="link"
+                size="small"
+                icon={<PauseCircleOutlined />}
+                onClick={() => handlePause(record)}
+                disabled={isRunning}
+              >
+                暂停
+              </Button>
+            )}
+            {record.status === JobStatus.PAUSED && (
+              <Button
+                type="link"
+                size="small"
+                icon={<PlayCircleOutlined />}
+                onClick={() => handleResume(record)}
+              >
+                恢复
+              </Button>
+            )}
+            {record.status !== JobStatus.PAUSED && (
+              <Button
+                type="link"
+                size="small"
+                danger={record.status === JobStatus.ENABLED}
+                icon={record.status === JobStatus.ENABLED ? <StopOutlined /> : <PlayCircleOutlined />}
+                onClick={() => handleToggleStatus(record)}
+                disabled={isRunning}
+              >
+                {record.status === JobStatus.ENABLED ? '禁用' : '启用'}
+              </Button>
+            )}
+            <Button
+              type="link"
+              size="small"
+              icon={<ThunderboltOutlined />}
+              onClick={() => handleTrigger(record)}
+              disabled={isRunning}
+            >
+              触发
+            </Button>
+            <Popconfirm
+              title="确定要删除这个任务吗？"
+              description="删除后将无法恢复"
+              onConfirm={() => handleDelete(record)}
+              okText="确定"
+              cancelText="取消"
+              disabled={isRunning}
+            >
+              <Button type="link" size="small" danger icon={<DeleteOutlined />} disabled={isRunning}>
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -308,6 +432,7 @@ const Jobs: React.FC = () => {
               onChange={handleStatusChange}
             >
               <Option value={JobStatus.ENABLED}>启用</Option>
+              <Option value={JobStatus.PAUSED}>暂停</Option>
               <Option value={JobStatus.DISABLED}>禁用</Option>
             </Select>
           </Col>
@@ -325,8 +450,8 @@ const Jobs: React.FC = () => {
           </Col>
           <Col span={4}>
             <Space>
-              <Button icon={<ReloadOutlined />} onClick={handleReset}>
-                重置
+              <Button icon={<ReloadOutlined />} onClick={fetchJobs} loading={loading}>
+                刷新
               </Button>
               <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
                 新增任务
@@ -353,7 +478,8 @@ const Jobs: React.FC = () => {
               setPageSize(ps);
             },
           }}
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1400 }}
+          rowClassName={(record) => record.runningInfo ? 'ant-table-row-selected' : ''}
         />
       </Card>
 

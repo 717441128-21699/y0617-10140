@@ -6,10 +6,15 @@ import {
   JobType,
   ScheduleType,
   ExecutionStatus,
+  RunningJobInfo,
 } from '../types';
 import { isValidCronExpression, getNextExecutionTime } from '../utils/cronUtils';
 import { jobScheduler } from '../scheduler/JobScheduler';
 import logger from '../utils/logger';
+
+export interface JobWithRunningInfo extends IJobDocument {
+  runningInfo?: RunningJobInfo | null;
+}
 
 export interface CreateJobRequest {
   name: string;
@@ -104,7 +109,7 @@ export class JobService {
     return JobModel.findById(id);
   }
 
-  async getJobs(query: JobListQuery): Promise<PaginatedResult<IJobDocument>> {
+  async getJobs(query: JobListQuery): Promise<PaginatedResult<JobWithRunningInfo>> {
     const page = query.page || 1;
     const pageSize = query.pageSize || 10;
     const skip = (page - 1) * pageSize;
@@ -119,13 +124,22 @@ export class JobService {
       ];
     }
 
-    const [data, total] = await Promise.all([
+    const [data, total, runningJobs] = await Promise.all([
       JobModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(pageSize),
       JobModel.countDocuments(filter),
+      jobScheduler.getAllRunningJobs(),
     ]);
 
+    const runningJobMap = new Map(runningJobs.map(rj => [rj.jobId, rj]));
+
+    const dataWithRunningInfo: JobWithRunningInfo[] = data.map(job => {
+      const jobWithInfo = job.toObject() as JobWithRunningInfo;
+      jobWithInfo.runningInfo = runningJobMap.get(job._id.toString()) || null;
+      return jobWithInfo;
+    });
+
     return {
-      data,
+      data: dataWithRunningInfo,
       total,
       page,
       pageSize,
@@ -185,6 +199,18 @@ export class JobService {
     }
 
     return jobScheduler.triggerJobManually(id);
+  }
+
+  async pauseJob(id: string): Promise<IJobDocument> {
+    return jobScheduler.pauseJob(id);
+  }
+
+  async resumeJob(id: string): Promise<IJobDocument> {
+    return jobScheduler.resumeJob(id);
+  }
+
+  async getRunningJobInfo(id: string): Promise<RunningJobInfo | null> {
+    return jobScheduler.getRunningJobInfo(id);
   }
 
   private validateJobRequest(request: Partial<CreateJobRequest>): void {

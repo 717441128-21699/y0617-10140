@@ -1,6 +1,6 @@
 import { IJobDocument } from '../models/Job';
 import { ExecutionHistoryModel } from '../models/ExecutionHistory';
-import { JobType, ExecutionStatus } from '../types';
+import { JobType, ExecutionStatus, RetryDetail, RunningJobInfo } from '../types';
 import { httpExecutor, ExecutionResult } from './HttpExecutor';
 import { scriptExecutor } from './ScriptExecutor';
 import { alertService } from '../services/AlertService';
@@ -17,26 +17,39 @@ const EXECUTING_KEY_TTL = 3600;
 export class JobExecutor {
   private pendingExecutions: Set<string> = new Set();
 
-  async isJobRunning(jobId: string): Promise<boolean> {
+  async getRunningJobInfo(jobId: string): Promise<RunningJobInfo | null> {
     if (this.pendingExecutions.has(jobId)) {
-      return true;
+      try {
+        const redis = getRedisClient();
+        const result = await redis.get(`${EXECUTING_KEY_PREFIX}${jobId}`);
+        if (result) {
+          return JSON.parse(result) as RunningJobInfo;
+        }
+      } catch (error) {
+        logger.warn('Failed to get running job info from Redis:', error);
+      }
     }
     try {
       const redis = getRedisClient();
       const result = await redis.get(`${EXECUTING_KEY_PREFIX}${jobId}`);
-      return result !== null;
+      return result ? (JSON.parse(result) as RunningJobInfo) : null;
     } catch (error) {
-      logger.warn('Failed to check job running status from Redis:', error);
-      return this.pendingExecutions.has(jobId);
+      logger.warn('Failed to get running job info from Redis:', error);
+      return null;
     }
   }
 
-  private async setJobRunning(jobId: string): Promise<boolean> {
+  async isJobRunning(jobId: string): Promise<boolean> {
+    const info = await this.getRunningJobInfo(jobId);
+    return info !== null;
+  }
+
+  private async setJobRunning(info: RunningJobInfo): Promise<boolean> {
     try {
       const redis = getRedisClient();
       const result = await redis.set(
-        `${EXECUTING_KEY_PREFIX}${jobId}`,
-        config.instanceId,
+        `${EXECUTING_KEY_PREFIX}${info.jobId}`,
+        JSON.stringify(info),
         'EX',
         EXECUTING_KEY_TTL,
         'NX'
@@ -57,6 +70,24 @@ export class JobExecutor {
     }
   }
 
+  async getAllRunningJobs(): Promise<RunningJobInfo[]> {
+    try {
+      const redis = getRedisClient();
+      const keys = await redis.keys(`${EXECUTING_KEY_PREFIX}*`);
+      const jobs: RunningJobInfo[] = [];
+      for (const key of keys) {
+        const value = await redis.get(key);
+        if (value) {
+          jobs.push(JSON.parse(value) as RunningJobInfo);
+        }
+      }
+      return jobs;
+    } catch (error) {
+      logger.warn('Failed to get all running jobs from Redis:', error);
+      return [];
+    }
+  }
+
   async execute(
     job: IJobDocument,
     triggeredBy: 'scheduler' | 'manual'
@@ -69,7 +100,15 @@ export class JobExecutor {
       return 'already_running';
     }
 
-    const acquired = await this.setJobRunning(jobId);
+    const runningInfo: RunningJobInfo = {
+      jobId,
+      nodeId: config.instanceId,
+      startTime: Date.now(),
+      triggeredBy,
+      executionId,
+    };
+
+    const acquired = await this.setJobRunning(runningInfo);
     if (!acquired) {
       logger.debug(`Job ${job.name} is already executing on another node, skipping`);
       return 'already_running';
@@ -103,14 +142,17 @@ export class JobExecutor {
       status: ExecutionStatus.PENDING,
       retryCount: 0,
       maxRetries,
+      retryDetails: [],
       nodeId: config.instanceId,
       triggeredBy,
     });
 
     let retryCount = 0;
     let lastResult: ExecutionResult | null = null;
+    const retryDetails: RetryDetail[] = [];
 
     while (retryCount <= maxRetries) {
+      const attemptStartTime = new Date();
       const executionLock = new DistributedLock(`${job._id}:exec:${retryCount}`, 60000);
       const lockAcquired = await executionLock.acquire();
 
@@ -118,6 +160,8 @@ export class JobExecutor {
         logger.debug(`Could not acquire execution lock for retry ${retryCount} of job ${job.name}`);
         return;
       }
+
+      let attemptResult: ExecutionResult;
 
       try {
         if (retryCount > 0) {
@@ -128,37 +172,81 @@ export class JobExecutor {
         }
 
         lastResult = await this.executeJob(job);
+        attemptResult = lastResult;
 
-        if (lastResult.success) {
-          history.endTime = new Date();
-          history.duration = lastResult.duration;
+        const attemptEndTime = new Date();
+        const attemptDuration = attemptResult.duration || (attemptEndTime.getTime() - attemptStartTime.getTime());
+
+        if (attemptResult.success) {
+          const detail: RetryDetail = {
+            attempt: retryCount,
+            startTime: attemptStartTime,
+            endTime: attemptEndTime,
+            duration: attemptDuration,
+            status: ExecutionStatus.SUCCESS,
+            result: attemptResult.result,
+          };
+          retryDetails.push(detail);
+
+          history.endTime = attemptEndTime;
+          history.duration = attemptEndTime.getTime() - startTime.getTime();
           history.status = ExecutionStatus.SUCCESS;
-          history.result = lastResult.result;
+          history.result = attemptResult.result;
+          history.retryDetails = retryDetails;
+          history.retryCount = retryCount;
           await history.save();
 
           job.successCount++;
           await job.save();
 
-          logger.info(`Job ${job.name} executed successfully in ${lastResult.duration}ms`);
+          logger.info(`Job ${job.name} executed successfully in ${attemptDuration}ms`);
           return;
         }
+
+        const detail: RetryDetail = {
+          attempt: retryCount,
+          startTime: attemptStartTime,
+          endTime: attemptEndTime,
+          duration: attemptDuration,
+          status: ExecutionStatus.FAILED,
+          result: attemptResult.result,
+          error: attemptResult.error,
+        };
+        retryDetails.push(detail);
+        history.retryDetails = retryDetails;
+        await history.save();
 
         if (retryCount === maxRetries) {
           break;
         }
 
         logger.warn(
-          `Job ${job.name} failed (attempt ${retryCount + 1}/${maxRetries + 1}): ${lastResult.error}`
+          `Job ${job.name} failed (attempt ${retryCount + 1}/${maxRetries + 1}): ${attemptResult.error}`
         );
 
         await this.sleep(retryInterval);
         retryCount++;
       } catch (error: any) {
+        const attemptEndTime = new Date();
+        const attemptDuration = attemptEndTime.getTime() - attemptStartTime.getTime();
+
         lastResult = {
           success: false,
           error: error.message || 'Unknown execution error',
-          duration: Date.now() - startTime.getTime(),
+          duration: attemptDuration,
         };
+
+        const detail: RetryDetail = {
+          attempt: retryCount,
+          startTime: attemptStartTime,
+          endTime: attemptEndTime,
+          duration: attemptDuration,
+          status: ExecutionStatus.FAILED,
+          error: error.message || 'Unknown execution error',
+        };
+        retryDetails.push(detail);
+        history.retryDetails = retryDetails;
+        await history.save();
 
         if (retryCount === maxRetries) {
           break;
@@ -175,12 +263,14 @@ export class JobExecutor {
       }
     }
 
-    history.endTime = new Date();
-    history.duration = lastResult?.duration || Date.now() - startTime.getTime();
+    const endTime = new Date();
+    history.endTime = endTime;
+    history.duration = endTime.getTime() - startTime.getTime();
     history.status = ExecutionStatus.FINAL_FAILED;
     history.error = lastResult?.error || 'Max retries exceeded';
     history.result = lastResult?.result || undefined;
     history.retryCount = retryCount;
+    history.retryDetails = retryDetails;
     await history.save();
 
     job.failedCount++;
@@ -249,3 +339,5 @@ export class JobExecutor {
     logger.info('JobExecutor shutdown complete');
   }
 }
+
+export const jobExecutor = new JobExecutor();

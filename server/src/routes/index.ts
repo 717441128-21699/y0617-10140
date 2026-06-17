@@ -24,7 +24,10 @@ router.put('/jobs/:id', jobController.updateJob.bind(jobController));
 router.delete('/jobs/:id', jobController.deleteJob.bind(jobController));
 router.post('/jobs/:id/enable', jobController.enableJob.bind(jobController));
 router.post('/jobs/:id/disable', jobController.disableJob.bind(jobController));
+router.post('/jobs/:id/pause', jobController.pauseJob.bind(jobController));
+router.post('/jobs/:id/resume', jobController.resumeJob.bind(jobController));
 router.post('/jobs/:id/trigger', jobController.triggerJob.bind(jobController));
+router.get('/jobs/:id/running-info', jobController.getRunningInfo.bind(jobController));
 
 router.get('/execution-history', executionHistoryController.getHistory.bind(executionHistoryController));
 router.get('/execution-history/:id', executionHistoryController.getHistoryById.bind(executionHistoryController));

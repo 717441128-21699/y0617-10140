@@ -8,6 +8,7 @@ import {
   CreateJobRequest,
   UpdateJobRequest,
   ApiResponse,
+  RunningJobInfo,
 } from '../types';
 
 const api = axios.create({
@@ -48,8 +49,17 @@ export const jobApi = {
   disableJob: (id: string): Promise<ApiResponse<Job>> =>
     api.post(`/jobs/${id}/disable`),
 
+  pauseJob: (id: string): Promise<ApiResponse<Job>> =>
+    api.post(`/jobs/${id}/pause`),
+
+  resumeJob: (id: string): Promise<ApiResponse<Job>> =>
+    api.post(`/jobs/${id}/resume`),
+
   triggerJob: (id: string): Promise<ApiResponse> =>
     api.post(`/jobs/${id}/trigger`),
+
+  getRunningInfo: (id: string): Promise<ApiResponse<RunningJobInfo | null>> =>
+    api.get(`/jobs/${id}/running-info`),
 
   validateCron: (expression: string): Promise<ApiResponse<{ valid: boolean; description: string }>> =>
     api.get('/jobs/validate-cron', { params: { expression } }),

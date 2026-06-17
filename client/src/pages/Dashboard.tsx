@@ -8,6 +8,7 @@ import {
   PlayCircleOutlined,
   PauseCircleOutlined,
   AppstoreOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import StatisticsCharts from '../components/StatisticsCharts';
 import { statisticsApi } from '../services/api';
@@ -97,10 +98,20 @@ const Dashboard: React.FC = () => {
         <Col xs={24} sm={12} md={8} lg={6}>
           <Card loading={loading}>
             <Statistic
-              title="已禁用任务"
-              value={statistics?.disabledJobs || 0}
+              title="已暂停任务"
+              value={statistics?.pausedJobs || 0}
               prefix={<PauseCircleOutlined />}
               valueStyle={{ color: '#faad14' }}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} md={8} lg={6}>
+          <Card loading={loading}>
+            <Statistic
+              title="已禁用任务"
+              value={statistics?.disabledJobs || 0}
+              prefix={<StopOutlined />}
+              valueStyle={{ color: '#8c8c8c' }}
             />
           </Card>
         </Col>

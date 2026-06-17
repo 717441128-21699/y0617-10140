@@ -148,6 +148,50 @@ export class JobController {
     }
   }
 
+  async pauseJob(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const job = await jobService.pauseJob(id);
+      res.json({
+        success: true,
+        data: job,
+        message: '任务暂停成功',
+      });
+    } catch (error) {
+      logger.error('Error pausing job:', error);
+      next(error);
+    }
+  }
+
+  async resumeJob(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const job = await jobService.resumeJob(id);
+      res.json({
+        success: true,
+        data: job,
+        message: '任务恢复成功',
+      });
+    } catch (error) {
+      logger.error('Error resuming job:', error);
+      next(error);
+    }
+  }
+
+  async getRunningInfo(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { id } = req.params;
+      const info = await jobService.getRunningJobInfo(id);
+      res.json({
+        success: true,
+        data: info,
+      });
+    } catch (error) {
+      logger.error('Error getting running info:', error);
+      next(error);
+    }
+  }
+
   async previewNextExecutions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { scheduleType, cronExpression, executeAt, count } = req.query;

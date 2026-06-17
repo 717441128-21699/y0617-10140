@@ -6,6 +6,25 @@ export enum JobType {
 export enum JobStatus {
   ENABLED = 'enabled',
   DISABLED = 'disabled',
+  PAUSED = 'paused',
+}
+
+export interface RunningJobInfo {
+  jobId: string;
+  nodeId: string;
+  startTime: number;
+  triggeredBy: 'scheduler' | 'manual';
+  executionId: string;
+}
+
+export interface RetryDetail {
+  attempt: number;
+  startTime: Date;
+  endTime: Date;
+  duration: number;
+  status: ExecutionStatus;
+  result?: string;
+  error?: string;
 }
 
 export enum ExecutionStatus {
@@ -77,6 +96,7 @@ export interface ExecutionHistory {
   error?: string;
   retryCount: number;
   maxRetries: number;
+  retryDetails?: RetryDetail[];
   nodeId: string;
   triggeredBy: 'scheduler' | 'manual';
   createdAt: Date;
@@ -86,6 +106,7 @@ export interface Statistics {
   totalJobs: number;
   enabledJobs: number;
   disabledJobs: number;
+  pausedJobs: number;
   totalExecutions: number;
   successCount: number;
   failedCount: number;
