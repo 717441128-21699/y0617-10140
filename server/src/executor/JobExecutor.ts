@@ -8,25 +8,32 @@ import { config } from '../config';
 import logger from '../utils/logger';
 import { DistributedLock } from '../utils/distributedLock';
 
+export type ExecuteResult = 'executed' | 'already_running' | 'skipped';
+
 export class JobExecutor {
   private pendingExecutions: Set<string> = new Set();
+
+  isJobRunning(jobId: string): boolean {
+    return this.pendingExecutions.has(jobId);
+  }
 
   async execute(
     job: IJobDocument,
     triggeredBy: 'scheduler' | 'manual'
-  ): Promise<void> {
+  ): Promise<ExecuteResult> {
     const jobId = job._id.toString();
     const executionId = `${jobId}-${Date.now()}`;
 
     if (this.pendingExecutions.has(jobId)) {
       logger.debug(`Job ${job.name} is already executing, skipping`);
-      return;
+      return 'already_running';
     }
 
     this.pendingExecutions.add(jobId);
 
     try {
       await this.executeWithRetry(job, triggeredBy, executionId);
+      return 'executed';
     } finally {
       this.pendingExecutions.delete(jobId);
     }

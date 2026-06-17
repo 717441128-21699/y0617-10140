@@ -83,7 +83,8 @@ export class ScriptExecutor {
     env?: Record<string, string>
   ): Promise<ExecutionResult> {
     return new Promise((resolve) => {
-      const child = spawn(interpreter, ['-e', script], {
+      const execFlag = interpreter.startsWith('python') ? '-c' : '-e';
+      const child = spawn(interpreter, [execFlag, script], {
         env: { ...process.env, ...env },
         timeout,
       });

@@ -178,7 +178,7 @@ export class JobService {
     return job;
   }
 
-  async triggerJob(id: string): Promise<boolean> {
+  async triggerJob(id: string): Promise<{ success: boolean; reason?: string }> {
     const job = await JobModel.findById(id);
     if (!job) {
       throw new Error('Job not found');

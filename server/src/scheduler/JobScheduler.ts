@@ -162,10 +162,15 @@ export class JobScheduler {
     }
   }
 
-  async triggerJobManually(jobId: string): Promise<boolean> {
+  async triggerJobManually(jobId: string): Promise<{ success: boolean; reason?: string }> {
     const job = await JobModel.findById(jobId);
     if (!job) {
       throw new Error('Job not found');
+    }
+
+    if (this.jobExecutor.isJobRunning(jobId)) {
+      logger.warn(`Job ${job.name} is already running, cannot trigger manually`);
+      return { success: false, reason: '任务正在执行中，请稍后再试' };
     }
 
     const lock = new DistributedLock(jobId, config.lockTtl);
@@ -173,12 +178,17 @@ export class JobScheduler {
 
     if (!acquired) {
       logger.warn(`Could not acquire lock for manual trigger of job ${job.name}`);
-      return false;
+      return { success: false, reason: '无法获取任务锁，请稍后再试' };
     }
 
     try {
       logger.info(`Manually triggering job: ${job.name}`);
-      void this.jobExecutor.execute(job, 'manual').catch((error) => {
+
+      void this.jobExecutor.execute(job, 'manual').then((result) => {
+        if (result === 'already_running') {
+          logger.warn(`Job ${job.name} was already running when manual trigger executed`);
+        }
+      }).catch((error) => {
         logger.error(`Error in manual execution of job ${job.name}:`, error);
       });
 
@@ -186,7 +196,7 @@ export class JobScheduler {
       job.lastExecutionTime = new Date();
       await job.save();
 
-      return true;
+      return { success: true };
     } finally {
       await lock.release();
     }

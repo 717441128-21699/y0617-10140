@@ -82,25 +82,65 @@ export function formatCronDescription(expression: string): string {
 
   const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
 
-  let description = '';
+  const parseInterval = (part: string): string | null => {
+    if (part === '*') return null;
+    if (part.startsWith('*/')) {
+      return `每${part.slice(2)}`;
+    }
+    return null;
+  };
+
+  const minInterval = parseInterval(minute);
+  const hourInterval = parseInterval(hour);
 
   if (minute === '*' && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    description = '每秒执行';
-  } else if (hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    description = `每小时第 ${minute} 分钟执行`;
-  } else if (dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
-    description = `每天 ${hour}:${minute.padStart(2, '0')} 执行`;
-  } else if (month === '*' && dayOfWeek === '*') {
-    description = `每月 ${dayOfMonth} 日 ${hour}:${minute.padStart(2, '0')} 执行`;
-  } else if (dayOfMonth === '*' && month === '*') {
-    const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-    const dayNames = dayOfWeek.split(',').map(d => weekDays[parseInt(d)] || d).join('、');
-    description = `每周 ${dayNames} ${hour}:${minute.padStart(2, '0')} 执行`;
-  } else if (dayOfWeek === '*') {
-    description = `每年 ${month} 月 ${dayOfMonth} 日 ${hour}:${minute.padStart(2, '0')} 执行`;
-  } else {
-    description = `Cron: ${expression}`;
+    return '每分钟执行';
   }
 
-  return description;
+  if (minInterval && hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    return `${minInterval}分钟执行`;
+  }
+
+  if (hourInterval && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    if (minute === '*') {
+      return `${hourInterval}小时执行`;
+    }
+    if (!minute.includes('*') && !minute.includes('/')) {
+      return `${hourInterval}小时第${minute}分钟执行`;
+    }
+  }
+
+  if (hour === '*' && dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    if (minute.includes(',') || minute.includes('-')) {
+      return `每小时第 ${minute} 分钟执行`;
+    }
+    return `每小时第 ${minute} 分钟执行`;
+  }
+
+  if (dayOfMonth === '*' && month === '*' && dayOfWeek === '*') {
+    if (minute === '*' && hour !== '*') {
+      const hourInterval2 = parseInterval(hour);
+      if (hourInterval2) {
+        return `${hourInterval2}小时执行`;
+      }
+      return `每天 ${hour}:00 执行`;
+    }
+    return `每天 ${hour}:${minute.padStart(2, '0')} 执行`;
+  }
+
+  if (month === '*' && dayOfWeek === '*') {
+    return `每月 ${dayOfMonth} 日 ${hour}:${minute.padStart(2, '0')} 执行`;
+  }
+
+  if (dayOfMonth === '*' && month === '*') {
+    const weekDays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const dayNames = dayOfWeek.split(',').map(d => weekDays[parseInt(d)] || d).join('、');
+    return `每周 ${dayNames} ${hour}:${minute.padStart(2, '0')} 执行`;
+  }
+
+  if (dayOfWeek === '*') {
+    return `每年 ${month} 月 ${dayOfMonth} 日 ${hour}:${minute.padStart(2, '0')} 执行`;
+  }
+
+  return `Cron: ${expression}`;
 }

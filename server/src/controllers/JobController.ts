@@ -131,16 +131,16 @@ export class JobController {
     try {
       const { id } = req.params;
       const result = await jobService.triggerJob(id);
-      if (!result) {
+      if (!result.success) {
         res.status(409).json({
           success: false,
-          message: 'Job is already running or lock cannot be acquired',
+          message: result.reason || '任务触发失败',
         });
         return;
       }
       res.json({
         success: true,
-        message: 'Job triggered successfully',
+        message: '任务触发成功',
       });
     } catch (error) {
       logger.error('Error triggering job:', error);
